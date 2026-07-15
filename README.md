@@ -57,7 +57,7 @@ Raises an error for unterminated tags or mismatched/unopened section closing tag
 ## Example
 
 ```sh
-mq -L . -I raw 'import "template" as t
+mq -L . -I raw 'let t = import "template"
 | t::template_render(
     "# {{title}}\n\n{{#items}}\n- {{name}}: {{price}}\n{{/items}}\n{{^items}}\nNo items.\n{{/items}}\n",
     {"title": "Order", "items": [{"name": "Widget", "price": 10}, {"name": "Gadget", "price": 20}]}
