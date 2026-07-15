@@ -1,0 +1,217 @@
+# A lightweight Mustache/Handlebars-style templating engine implemented in mq.
+# Supports variable interpolation ({{name}} / {{{name}}} / {{&name}}), sections
+# ({{#name}}...{{/name}}), inverted sections ({{^name}}...{{/name}}), comments
+# ({{!...}}), dotted paths ({{a.b.c}}), and standalone-line whitespace trimming.
+
+def _tpl_escape_html(value):
+  let s0 = to_string(value)
+  | let s1 = replace(s0, "&", "&amp;")
+  | let s2 = replace(s1, "<", "&lt;")
+  | let s3 = replace(s2, ">", "&gt;")
+  | let s4 = replace(s3, "\"", "&quot;")
+  | replace(s4, "'", "&#39;")
+end
+
+def _tpl_truthy(value):
+  if (is_none(value)): false
+  elif (is_bool(value)): value
+  elif (is_array(value)): !is_empty(value)
+  else: true
+end
+
+def _tpl_find_in_stack(stack, key):
+  var i = 0
+  | var result = None
+  | var found = false
+  | let n = len(stack)
+  | let _ = while (i < n && !found):
+      let ctx = stack[i]
+      | if (is_dict(ctx) && has(ctx, key)):
+          do result = get(ctx, key) | found = true | i end
+        else:
+          do i += 1 | i end
+    end
+  | result
+end
+
+def _tpl_resolve_path(stack, path):
+  if (path == "." || path == "this"):
+    stack[0]
+  else:
+    do
+      let parts = split(path, "\\.")
+      | let root = _tpl_find_in_stack(stack, parts[0])
+      | let rest = slice(parts, 1, len(parts))
+      | fold(rest, root, ->(acc, key): if (is_dict(acc) && has(acc, key)): get(acc, key) else: None;)
+    end
+end
+
+def _tpl_index_of_from(s, needle, from):
+  let n = len(s)
+  | if (from >= n): -1
+    else:
+      do
+        let idx = index(slice(s, from, n), needle)
+        | if (idx < 0): -1 else: idx + from
+      end
+end
+
+def _tpl_flush_text(tokens, buf):
+  if (buf == ""): tokens
+  else: tokens + [{"t": "text", "v": buf}]
+end
+
+# Tokenizes a template string into an array of tag/text tokens.
+def _tpl_lex(s):
+  var pos = 0
+  | var tokens = []
+  | var buf = ""
+  | let n = len(s)
+  | let _ = while (pos < n):
+      if (pos + 1 < n && s[pos] == "{" && s[pos + 1] == "{"):
+        do
+          tokens = _tpl_flush_text(tokens, buf)
+          | buf = ""
+          | let is_triple = pos + 2 < n && s[pos + 2] == "{"
+          | let close = if (is_triple): "}}}" else: "}}"
+          | let tag_start = if (is_triple): pos + 3 else: pos + 2
+          | let close_idx = _tpl_index_of_from(s, close, tag_start)
+          | if (close_idx < 0):
+              error("template: unterminated tag starting at position " + to_string(pos))
+            else:
+              do
+                let raw = trim(slice(s, tag_start, close_idx))
+                | let tok = if (is_triple): {"t": "var", "v": raw, "escape": false}
+                    elif (starts_with(raw, "!")): {"t": "comment", "v": ""}
+                    elif (starts_with(raw, "#")): {"t": "open", "v": trim(slice(raw, 1, len(raw)))}
+                    elif (starts_with(raw, "^")): {"t": "inv", "v": trim(slice(raw, 1, len(raw)))}
+                    elif (starts_with(raw, "/")): {"t": "close", "v": trim(slice(raw, 1, len(raw)))}
+                    elif (starts_with(raw, "&")): {"t": "var", "v": trim(slice(raw, 1, len(raw))), "escape": false}
+                    else: {"t": "var", "v": raw, "escape": true}
+                | tokens += [tok]
+                | pos = close_idx + len(close)
+                | tokens
+              end
+        end
+      else:
+        do buf = buf + s[pos] | pos += 1 | tokens end
+    end
+  | _tpl_flush_text(tokens, buf)
+end
+
+def _tpl_is_standalone_line(line):
+  is_regex_match(line, "^[ \t]*\\{\\{[#\\^/!][^}]*\\}\\}[ \t]*$")
+end
+
+# Removes the surrounding whitespace and line break around section/inverted/close/comment
+# tags that appear alone on their own line, matching Mustache's "standalone tag" behavior.
+def _tpl_strip_standalone(s):
+  var lines = split(s, "\n")
+  | let n = len(lines)
+  | var result = []
+  | var i = 0
+  | let _ = while (i < n):
+      let line = lines[i]
+      | if (_tpl_is_standalone_line(line) && i < n - 1):
+          do
+            lines[i + 1] = trim(line) + lines[i + 1]
+            | i += 1
+            | result
+          end
+        else:
+          do result += [line] | i += 1 | result end
+    end
+  | join(result, "\n")
+end
+
+# Parses a flat token stream into a tree of {text, var, section} nodes.
+# `close_name` is the name of the enclosing section tag, or None at the top level.
+def _tpl_parse(tokens, pos, close_name):
+  var cur = pos
+  | var items = []
+  | var done = false
+  | let n = len(tokens)
+  | let _ = while (!done):
+      if (cur >= n):
+        if (close_name == None):
+          do done = true | items end
+        else:
+          error("template: unclosed section '" + close_name + "'")
+      else:
+        do
+          let tok = tokens[cur]
+          | let tt = tok["t"]
+          | if (tt == "close"):
+              if (close_name == None):
+                error("template: unexpected closing tag '" + tok["v"] + "'")
+              elif (tok["v"] != close_name):
+                error("template: mismatched closing tag, expected '" + close_name + "' but got '" + tok["v"] + "'")
+              else:
+                do cur += 1 | done = true | items end
+            elif (tt == "text"):
+              do items += [{"t": "text", "v": tok["v"]}] | cur += 1 | items end
+            elif (tt == "var"):
+              do items += [{"t": "var", "v": tok["v"], "escape": tok["escape"]}] | cur += 1 | items end
+            elif (tt == "comment"):
+              do cur += 1 | items end
+            else:
+              do
+                let name = tok["v"]
+                | let inverted = tt == "inv"
+                | let r = _tpl_parse(tokens, cur + 1, name)
+                | cur = r[0]
+                | items += [{"t": "section", "v": name, "inverted": inverted, "children": r[1]}]
+                | items
+              end
+        end
+    end
+  | [cur, items]
+end
+
+def _tpl_render_var(stack, path, escape):
+  let value = _tpl_resolve_path(stack, path)
+  | if (escape): _tpl_escape_html(value)
+    else: to_string(value)
+end
+
+def _tpl_render_section(stack, name, inverted, children):
+  let value = _tpl_resolve_path(stack, name)
+  | let truthy = _tpl_truthy(value)
+  | if (inverted):
+      if (truthy): "" else: _tpl_render_items(stack, children)
+    elif (!truthy):
+      ""
+    elif (is_array(value)):
+      join(map(value, ->(item): _tpl_render_items([item] + stack, children);), "")
+    else:
+      _tpl_render_items([value] + stack, children)
+end
+
+def _tpl_render_items(stack, items):
+  join(map(items, ->(node):
+    let tt = node["t"]
+    | if (tt == "text"): node["v"]
+      elif (tt == "var"): _tpl_render_var(stack, node["v"], node["escape"])
+      else: _tpl_render_section(stack, node["v"], node["inverted"], node["children"]);
+  ), "")
+end
+
+# Renders a Mustache/Handlebars-style `template` string against `data` (a dict, or
+# any value reachable via `{{.}}`). Supports:
+#
+# - `{{name}}` / `{{{name}}}` / `{{&name}}` - escaped / unescaped interpolation
+# - `{{a.b.c}}` - dotted path lookups
+# - `{{.}}` / `{{this}}` - the current context
+# - `{{#name}}...{{/name}}` - sections: renders once per item for arrays, once for
+#   truthy dicts/scalars (pushing the value as the new context), or not at all when falsy
+# - `{{^name}}...{{/name}}` - inverted sections: renders only when `name` is falsy
+# - `{{! comment }}` - comments, removed from output
+#
+# Falsy values are `None`, `false`, and empty arrays; everything else (including `0`
+# and `""`) is truthy, per the Mustache spec.
+def template_render(template, data):
+  let stripped = _tpl_strip_standalone(to_string(template))
+  | let tokens = _tpl_lex(stripped)
+  | let parsed = _tpl_parse(tokens, 0, None)
+  | _tpl_render_items([data], parsed[1])
+end

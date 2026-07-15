@@ -1,0 +1,244 @@
+include "test"
+| include "template"
+|
+
+# -- Plain Text --
+
+def test_render_plain_text():
+  let result = template_render("Hello, World!", {})
+  | assert_eq(result, "Hello, World!")
+end
+
+def test_render_empty_template():
+  let result = template_render("", {})
+  | assert_eq(result, "")
+end
+
+# -- Variable Interpolation --
+
+def test_render_variable():
+  let result = template_render("Hello, {{name}}!", {"name": "World"})
+  | assert_eq(result, "Hello, World!")
+end
+
+def test_render_multiple_variables():
+  let result = template_render("{{a}}-{{b}}-{{c}}", {"a": 1, "b": 2, "c": 3})
+  | assert_eq(result, "1-2-3")
+end
+
+def test_render_missing_variable_is_empty():
+  let result = template_render("[{{missing}}]", {})
+  | assert_eq(result, "[]")
+end
+
+def test_render_number_variable():
+  let result = template_render("count={{n}}", {"n": 42})
+  | assert_eq(result, "count=42")
+end
+
+def test_render_zero_is_rendered():
+  let result = template_render("count={{n}}", {"n": 0})
+  | assert_eq(result, "count=0")
+end
+
+def test_render_boolean_variable():
+  let result = template_render("ok={{flag}}", {"flag": true})
+  | assert_eq(result, "ok=true")
+end
+
+def test_render_dotted_path():
+  let result = template_render("{{a.b.c}}", {"a": {"b": {"c": 42}}})
+  | assert_eq(result, "42")
+end
+
+def test_render_dotted_path_missing_is_empty():
+  let result = template_render("[{{a.b.c}}]", {"a": {}})
+  | assert_eq(result, "[]")
+end
+
+def test_render_current_context_dot():
+  let result = template_render("{{#items}}{{.}},{{/items}}", {"items": ["a", "b", "c"]})
+  | assert_eq(result, "a,b,c,")
+end
+
+def test_render_current_context_this():
+  let result = template_render("{{#items}}{{this}},{{/items}}", {"items": ["a", "b"]})
+  | assert_eq(result, "a,b,")
+end
+
+# -- HTML Escaping --
+
+def test_render_escapes_html_by_default():
+  let result = template_render("{{value}}", {"value": "<b>&\"'</b>"})
+  | assert_eq(result, "&lt;b&gt;&amp;&quot;&#39;&lt;/b&gt;")
+end
+
+def test_render_triple_mustache_is_unescaped():
+  let result = template_render("{{{value}}}", {"value": "<b>hi</b>"})
+  | assert_eq(result, "<b>hi</b>")
+end
+
+def test_render_ampersand_is_unescaped():
+  let result = template_render("{{&value}}", {"value": "<b>hi</b>"})
+  | assert_eq(result, "<b>hi</b>")
+end
+
+# -- Sections --
+
+def test_render_section_array_of_strings():
+  let result = template_render("{{#items}}[{{.}}]{{/items}}", {"items": ["a", "b"]})
+  | assert_eq(result, "[a][b]")
+end
+
+def test_render_section_array_of_dicts():
+  let result = template_render("{{#users}}{{name}} {{/users}}", {"users": [{"name": "A"}, {"name": "B"}]})
+  | assert_eq(result, "A B ")
+end
+
+def test_render_section_truthy_dict():
+  let result = template_render("{{#person}}{{name}} is {{age}}{{/person}}", {"person": {"name": "Alice", "age": 30}})
+  | assert_eq(result, "Alice is 30")
+end
+
+def test_render_section_false_is_skipped():
+  let result = template_render("[{{#flag}}shown{{/flag}}]", {"flag": false})
+  | assert_eq(result, "[]")
+end
+
+def test_render_section_none_is_skipped():
+  let result = template_render("[{{#flag}}shown{{/flag}}]", {})
+  | assert_eq(result, "[]")
+end
+
+def test_render_section_empty_array_is_skipped():
+  let result = template_render("[{{#items}}shown{{/items}}]", {"items": []})
+  | assert_eq(result, "[]")
+end
+
+def test_render_section_zero_is_truthy():
+  let result = template_render("[{{#n}}shown{{/n}}]", {"n": 0})
+  | assert_eq(result, "[shown]")
+end
+
+def test_render_section_empty_string_is_truthy():
+  let result = template_render("[{{#s}}shown{{/s}}]", {"s": ""})
+  | assert_eq(result, "[shown]")
+end
+
+def test_render_nested_sections():
+  let result = template_render("{{#a}}{{#b}}{{x}}{{/b}}{{/a}}", {"a": {"b": {"x": "deep"}}})
+  | assert_eq(result, "deep")
+end
+
+def test_render_section_context_stack_fallback():
+  let result = template_render("{{#items}}{{prefix}}{{.}} {{/items}}", {"prefix": "P-", "items": ["a", "b"]})
+  | assert_eq(result, "P-a P-b ")
+end
+
+# -- Inverted Sections --
+
+def test_render_inverted_section_renders_when_falsy():
+  let result = template_render("{{^flag}}shown{{/flag}}", {"flag": false})
+  | assert_eq(result, "shown")
+end
+
+def test_render_inverted_section_renders_when_missing():
+  let result = template_render("{{^flag}}shown{{/flag}}", {})
+  | assert_eq(result, "shown")
+end
+
+def test_render_inverted_section_renders_when_empty_array():
+  let result = template_render("{{^items}}empty{{/items}}", {"items": []})
+  | assert_eq(result, "empty")
+end
+
+def test_render_inverted_section_skipped_when_truthy():
+  let result = template_render("[{{^flag}}shown{{/flag}}]", {"flag": true})
+  | assert_eq(result, "[]")
+end
+
+# -- Comments --
+
+def test_render_comment_is_removed():
+  let result = template_render("a{{! this is a comment }}b", {})
+  | assert_eq(result, "ab")
+end
+
+# -- Standalone Line Trimming --
+
+def test_render_standalone_section_trims_whitespace():
+  let tpl = "Items:\n{{#items}}\n- {{.}}\n{{/items}}\nDone"
+  | let result = template_render(tpl, {"items": ["a", "b"]})
+  | assert_eq(result, "Items:\n- a\n- b\nDone")
+end
+
+def test_render_standalone_comment_trims_whitespace():
+  let tpl = "a\n{{! comment }}\nb"
+  | let result = template_render(tpl, {})
+  | assert_eq(result, "a\nb")
+end
+
+def test_render_standalone_inverted_trims_whitespace():
+  let tpl = "before\n{{^items}}\nnone\n{{/items}}\nafter"
+  | let result = template_render(tpl, {"items": []})
+  | assert_eq(result, "before\nnone\nafter")
+end
+
+def test_render_non_standalone_tag_keeps_whitespace():
+  let tpl = "before {{#items}}{{.}}{{/items}} after"
+  | let result = template_render(tpl, {"items": ["x"]})
+  | assert_eq(result, "before x after")
+end
+
+# -- Errors --
+
+def test_render_unterminated_tag_errors():
+  let result = try: template_render("{{oops", {}) catch: "caught"
+  | assert_eq(result, "caught")
+end
+
+def test_render_mismatched_close_tag_errors():
+  let result = try: template_render("{{#a}}x{{/b}}", {"a": true}) catch: "caught"
+  | assert_eq(result, "caught")
+end
+
+def test_render_unopened_close_tag_errors():
+  let result = try: template_render("x{{/a}}", {}) catch: "caught"
+  | assert_eq(result, "caught")
+end
+
+# -- Helper Function Tests --
+
+def test_truthy_none_is_false():
+  assert_eq(_tpl_truthy(None), false)
+end
+
+def test_truthy_false_is_false():
+  assert_eq(_tpl_truthy(false), false)
+end
+
+def test_truthy_empty_array_is_false():
+  assert_eq(_tpl_truthy([]), false)
+end
+
+def test_truthy_zero_is_true():
+  assert_eq(_tpl_truthy(0), true)
+end
+
+def test_truthy_empty_string_is_true():
+  assert_eq(_tpl_truthy(""), true)
+end
+
+def test_escape_html():
+  let result = _tpl_escape_html("<a href=\"x\">it's & fun</a>")
+  | assert_eq(result, "&lt;a href=&quot;x&quot;&gt;it&#39;s &amp; fun&lt;/a&gt;")
+end
+
+# -- Realistic Example --
+
+def test_render_realistic_template():
+  let tpl = "# {{title}}\n\n{{#items}}\n- {{name}}: {{price}}\n{{/items}}\n{{^items}}\nNo items.\n{{/items}}\n"
+  | let data = {"title": "Order", "items": [{"name": "Widget", "price": 10}, {"name": "Gadget", "price": 20}]}
+  | let result = template_render(tpl, data)
+  | assert_eq(result, "# Order\n\n- Widget: 10\n- Gadget: 20\n")
+end
